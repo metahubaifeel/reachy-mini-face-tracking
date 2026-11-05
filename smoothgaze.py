@@ -1,31 +1,39 @@
-"""smoothgaze —— 让机器人的头丝滑地跟着人脸转。
+"""smoothgaze - make a robot head follow a face smoothly.
 
-这个模块只做一件事：把「人脸在画面里偏了多少」变成「头该转到哪个角度」，
-并且让这个角度以连续、不抖、不过冲的方式被追上。
+This module does one thing: turn "how far off-centre the face is in the frame"
+into "what angle the head should be at", and get there continuously, without
+jitter and without overshoot.
 
-它不依赖任何具体的机器人 SDK。你只要提供三样东西：
-  1. 每帧的人脸位置，归一化到 -1..1，0 是画面正中
-  2. 拍这一帧的时刻
-  3. 一个 40Hz 左右的循环，每次回调取一次当前该到的姿态
+It depends on no robot SDK. You supply three things:
 
-剩下的交给你自己的驱动去执行。
+  1. the face position for each frame, normalised to -1..1, where 0 is centre
+  2. the timestamp of the moment that frame was captured
+  3. a loop at roughly 40 Hz that asks for the pose to apply
 
-核心不是人脸识别，是下面四件事：
+Your own driver does the rest.
 
-  一、每帧把误差补满，不要补一半。
-     补一半等于把收敛速度藏进增益里。人站着不动看不出，人一走就跟不上。
+The point is not face detection. It is these four decisions:
 
-  二、算目标时用「拍照那一刻头在哪」，不是用现在的角度。
-     抓帧到算出结果有几十毫秒，这段时间头还在转。拿当前角度当基准，
-     每一帧都会多推一点，表现就是过冲之后来回摆。
+  1. Close the full error every frame, not half of it.
+     Correcting half hides your convergence rate inside the gain. Standing
+     still you cannot tell. The moment the person walks, you fall behind.
 
-  三、平滑系数自适应。
-     目标在画面里动得快，说明人在走，系数给大；几乎不动时系数给小，压掉检测抖动。
+  2. Compute the target from where the head was when the frame was CAPTURED,
+     not from where it is now.
+     Capture to result takes tens of milliseconds and the head is still turning
+     during them. Using the current angle as the baseline pushes a little too
+     far every frame, and the visible result is overshoot then oscillation.
 
-  四、先转头，转不动了才动身子。身子带迟滞和驻留，而且永不自动回正。
+  3. Adaptive smoothing.
+     The target moving fast in the frame means the person is walking, so use a
+     large factor and track tightly. Barely moving means filter out detection
+     noise with a small factor.
 
-作者：JARVIS / Ethan
-许可：MIT
+  4. Turn the head first, and only involve the body when the head runs out.
+     The body has hysteresis and a dwell time, and never recenters itself.
+
+Author: JARVIS / Ethan
+License: MIT
 """
 
 from __future__ import annotations
@@ -47,32 +55,36 @@ __version__ = "1.0.0"
 
 
 def clamp(v: float, limit: float) -> float:
-    """把 v 钳在 -limit..limit。"""
+    """Clamp v into -limit..limit."""
     return limit if v > limit else (-limit if v < -limit else v)
 
 
 def pixels_to_degrees(nx: float, half_fov_deg: float) -> float:
-    """归一化像素偏移换成角度偏移。
+    """Convert a normalised pixel offset into an angular offset.
 
-    nx 是 -1..1 的归一化偏移，half_fov_deg 是相机的水平半视场角。
+    nx is the -1..1 normalised offset, half_fov_deg is the camera's horizontal
+    half field of view.
 
-    为什么不是简单地 nx * half_fov：那等于假设视场里角度和像素是线性的，
-    只有小视场才近似成立。真实相机是针孔模型，tan 才能对上。44 度半视场下，
-    边角处线性近似会差 15% 以上，表现就是「越往边上追得越不准」。
+    Why not simply nx * half_fov: that assumes angle and pixel are linear inside
+    the frame, which only holds for a narrow field of view. A real camera is a
+    pinhole model and only tan lines up. At a 44 degree half field of view the
+    linear approximation is off by more than 15 percent at the edges, and the
+    symptom is "tracking gets less accurate toward the edges".
     """
     nx = clamp(float(nx), 1.0)
     return math.degrees(math.atan(nx * math.tan(math.radians(half_fov_deg))))
 
 
 def degrees_to_pixels(deg: float, half_fov_deg: float) -> float:
-    """上面那个函数的逆运算，调试和仿真时用。"""
+    """Inverse of the function above. Used by the simulation and for debugging."""
     return math.tan(math.radians(deg)) / math.tan(math.radians(half_fov_deg))
 
 
 class PoseHistory:
-    """头部姿态环形缓冲，用来做延迟补偿。
+    """Ring buffer of head poses, used for latency compensation.
 
-    存最近若干秒的 (时刻, 偏航, 俯仰)。查的时候按时间戳找最接近的一条。
+    Stores (time, yaw, pitch) for the last few seconds. Lookups return the
+    entry closest to a given timestamp.
     """
 
     def __init__(self, maxlen: int = 80) -> None:
@@ -108,11 +120,13 @@ class PoseHistory:
 
 
 class GazeFilter:
-    """目标角度的一阶自适应低通，外加单步限幅。
+    """First-order adaptive low-pass on the target angle, plus a per-step limit.
 
-    两档系数取自 Reachy Mini 官方 SDK 的 _AdaptiveCenterFilter：
-    目标在画面里位移超过 move_threshold 就用 fast 追得紧，否则用 slow 压抖动。
-    固定系数只能二选一：要么跟得紧但抖，要么稳但慢。
+    The two factors come from the official Reachy Mini SDK's
+    _AdaptiveCenterFilter: when the target moves more than move_threshold in the
+    frame, use fast and track tightly; otherwise use slow and filter jitter.
+    A fixed factor forces a choice: track tightly and jitter, or stay stable and
+    lag behind.
     """
 
     def __init__(
@@ -153,10 +167,11 @@ class GazeFilter:
         seed_yaw: float = None,
         seed_pitch: float = None,
     ):
-        """喂进这一帧算出来的绝对目标角，返回平滑后的目标角。
+        """Feed in the absolute target angle from this frame, get back the smoothed one.
 
-        seed_yaw / seed_pitch 只在第一帧用：从「头现在在哪」起步，不要一上来
-        就跳到目标，否则画面上是一按就猛地扭头。
+        seed_yaw / seed_pitch are used only on the first frame: start from where
+        the head is now rather than jumping straight to the target, otherwise the
+        first measurement snaps the head around.
         """
         if not self.active:
             self.yaw = self.yaw if seed_yaw is None else seed_yaw
@@ -176,12 +191,14 @@ class GazeFilter:
 
 
 class Axis:
-    """单个轴上的运动：比例控制 + 速度限幅 + 加速度限幅 + 死区。
+    """Motion on a single axis: proportional control, velocity and acceleration
+    limits, plus a dead zone.
 
-    三件事合起来才叫「丝滑」：
-      限速      —— 头不会为了追人而转得比画面刷新还快
-      限加速度  —— 起步和刹车都有过程，没有顿挫
-      不越过目标 —— 算出来这一拍会冲过头，就直接落到目标并归零速度
+    All three are needed before it reads as smooth:
+      velocity limit      the head never turns faster than the camera refreshes
+      acceleration limit  starting and stopping have a ramp, so there is no jerk
+      never overshoot     if this step would pass the target, land on it and
+                          zero the velocity instead
     """
 
     def __init__(self, kp=4.0, vmax=70.0, amax=400.0, dead=0.4) -> None:
@@ -199,7 +216,8 @@ class Axis:
     def step(self, dt: float, target: float, limit: float = None) -> float:
         err = target - self.pos
         v_des = clamp(self.kp * err, self.vmax)
-        # 一阶速度环：让速度按加速度上限逼近期望速度
+        # First-order velocity loop: approach the desired velocity at no more
+        # than the acceleration limit.
         dv = v_des - self.vel
         self.vel += clamp(dv, self.amax * dt)
 
@@ -215,13 +233,18 @@ class Axis:
 
 
 class BodyGate:
-    """底盘的门控。头是手腕，身子是腰，能用手腕解决的就别动腰。
+    """Enable the body only when the head cannot reach on its own.
 
-    - enter：头相对身子超过这个角度才开始计时
-    - dwell：要持续这么久才真正介入，防止偶尔晃一下身子就跟
-    - exit：回到这个角度以内立刻退出
-    - lead：介入时身子目标 = 头目标 - lead，永远比头慢一拍，给头留余量
-    - 退出后原地冻结，不回正。回正会让画面明显晃一下
+    The head is the wrist, the body is the waist. Solve it with the wrist.
+
+    - enter: relative angle beyond which the dwell timer starts
+    - dwell: how long that must hold before the body actually engages, so one
+             stray wobble does not swing the whole torso
+    - exit:  come back inside this angle and the body stops at once
+    - lead:  while engaged the body target is head - lead, always lagging the
+             head so the head keeps headroom in the direction of travel
+    - after exit it freezes where it is and never recenters; recentering would
+      lurch the whole view
     """
 
     def __init__(
@@ -275,13 +298,13 @@ class BodyGate:
             head_rel = head - self.axis.pos
             target = clamp(head - math.copysign(self.lead, head_rel), self.body_limit)
         else:
-            target = self.axis.pos   # 就地冻结，不回正
+            target = self.axis.pos   # freeze in place, never recenter
 
         self.axis.step(dt, target, self.body_limit)
         return self.axis.pos
 
     def clamp_head(self, head: float) -> float:
-        """相对角是硬约束：头相对身子超出 rel_limit 就谁也别想动。"""
+        """The relative angle is a hard constraint: past rel_limit neither side moves."""
         rel = head - self.axis.pos
         if abs(rel) > self.rel_limit:
             head = self.axis.pos + math.copysign(self.rel_limit, rel)
@@ -289,19 +312,19 @@ class BodyGate:
 
 
 class SmoothGazeTracker:
-    """把上面几块拼起来，形成完整的一条链路。
+    """Wires the pieces above into one chain.
 
-    用法：
+    Usage:
 
         tr = SmoothGazeTracker(half_fov_h=44.0, half_fov_v=28.5)
 
-        # 视觉线程：每拿到一帧人脸就调一次
+        # Vision thread: once per frame that contains a face
         tr.on_face(nx, ny, capture_ts)
 
-        # 控制线程：40Hz 调一次，拿回去执行
+        # Control thread: at 40 Hz, then apply the result
         yaw, pitch, body = tr.tick(dt)
 
-    tick 里不碰任何硬件，只做数学。你想怎么驱动都行。
+    tick touches no hardware. It only does math. Drive it however you like.
     """
 
     def __init__(
@@ -330,12 +353,13 @@ class SmoothGazeTracker:
         self.lost = True
         self.frames = 0
 
-    # ---------- 视觉线程调用 ----------
+    # ---------- called from the vision thread ----------
 
     def on_face(self, nx: float, ny: float, capture_ts: float = None) -> tuple:
-        """喂进一帧人脸。nx/ny 是归一化偏移，capture_ts 是这一帧被拍下的时刻。
+        """Feed in one frame's face. nx/ny are normalised offsets, capture_ts is
+        when that frame was taken.
 
-        capture_ts 不给的话就用「现在减去管线延迟」估一个。
+        Without capture_ts it is estimated as now minus the pipeline latency.
         """
         now = time.time()
         nx = clamp(float(nx), 1.0)
@@ -344,13 +368,15 @@ class SmoothGazeTracker:
         if capture_ts is None:
             capture_ts = now - self.pipeline_ms / 1000.0
 
-        # 死区按归一化像素量取，不按角度取：
-        # 整个画面宽 2.0，0.02 是画面的 1%，换算成角度只有 0.9 度。
-        # 脸落在这圈里就是「正中间」，再微调只会跟着检测噪声抖。
+        # The dead zone is in normalised pixels, not degrees: the frame is 2.0
+        # wide, so 0.02 is one percent of it, which is under one degree. A face
+        # inside that circle counts as dead centre; chasing further only tracks
+        # detection noise.
         err_y = 0.0 if abs(nx) < self.filter.dead_zone else -pixels_to_degrees(nx, self.half_fov_h)
         err_p = 0.0 if abs(ny) < self.filter.dead_zone else pixels_to_degrees(ny, self.half_fov_v)
 
-        # 基准取「拍这一帧时头在哪」，不是现在的角度。这就是延迟补偿。
+        # Baseline is where the head was when this frame was captured, not where
+        # it is now. That is the latency compensation.
         raw_y = clamp(self.history.yaw_at(capture_ts) + err_y, self.yaw_limit)
         raw_p = clamp(self.history.pitch_at(capture_ts) + err_p, self.pitch_limit)
 
@@ -364,18 +390,18 @@ class SmoothGazeTracker:
         return ty, tp
 
     def on_lost(self) -> None:
-        """跟丢了就停在原地，不要慢慢滑回中心。"""
+        """Lost the face: stop where you are. Do not drift back to centre."""
         self.lost = True
         self.filter.active = False
 
-    # ---------- 控制线程调用 ----------
+    # ---------- called from the control thread ----------
 
     def tick(self, dt: float = 0.025, now: float = None) -> tuple:
-        """推进一个控制周期，返回 (头偏航, 头俯仰, 底盘偏航)，单位度。"""
+        """Advance one control period; returns (head yaw, head pitch, body yaw) in degrees."""
         now = time.time() if now is None else now
 
         if self.lost or (now - self.last_face_at) > self.lost_timeout:
-            # 没目标就别动，也别留残余速度
+            # No target: do not move, and leave no residual velocity behind.
             self.head_yaw.vel = self.head_pitch.vel = 0.0
             self.body.axis.vel = 0.0
             self.history.push(now, self.head_yaw.pos, self.head_pitch.pos)
@@ -392,7 +418,7 @@ class SmoothGazeTracker:
         return y, p, b
 
     def recenter(self, yaw: float = 0.0, pitch: float = 0.0, body: float = 0.0) -> None:
-        """显式回正。只有这里才会让底盘回中。"""
+        """Explicit recenter. This is the only path that moves the body back to zero."""
         self.head_yaw.reset(yaw)
         self.head_pitch.reset(pitch)
         self.body.reset(body)

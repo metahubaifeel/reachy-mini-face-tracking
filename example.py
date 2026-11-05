@@ -1,9 +1,10 @@
-"""两个演示，都不需要机器人。
+"""Two demos, neither needs a robot.
 
-    python example.py sim     离线闭环仿真，直接打印误差数据
-    python example.py cam     打开摄像头，屏幕上画一个虚拟的头在跟你的脸
+    python example.py sim     offline closed-loop simulation, prints error data
+    python example.py cam     opens a camera and draws a virtual head following your face
 
-仿真是最有说服力的一段：同一个人在做同样的动作，跑两套控制器，对比误差。
+The simulation is the convincing part: the same person, the same motion, two
+controllers, error side by side.
 """
 
 from __future__ import annotations
@@ -12,18 +13,18 @@ import math
 import random
 import sys
 
-from smoothgaze import SmoothGazeTracker, clamp, pixels_to_degrees, degrees_to_pixels
+from smoothgaze import SmoothGazeTracker, clamp, degrees_to_pixels
 
 
-# ---------------------------------------------------------------- 仿真
+# ---------------------------------------------------------------- simulation
 
 CTRL_HZ = 40.0
 CAM_FPS = 30.0
-DETECT_MS = 45.0          # 检测一次大概花多久
+DETECT_MS = 45.0          # roughly how long one detection takes
 
 
 def run(kind: str, face_fn, secs: float = 14.0, seed: int = 1):
-    """kind = 'smoothgaze' 或 'naive'。naive 是常见的错误写法。"""
+    """kind is 'smoothgaze' or 'naive'. 'naive' is the common wrong way."""
     rnd = random.Random(seed)
     tr = SmoothGazeTracker()
     tr.head_yaw.reset(0.0)
@@ -40,10 +41,10 @@ def run(kind: str, face_fn, secs: float = 14.0, seed: int = 1):
     errors = []
 
     while t < secs:
-        # 到点抓一帧
+        # Grab a frame when it is time
         while t >= next_cam:
             face = face_fn(t)
-            # 相对头的误差才是相机看到的东西
+            # What the camera sees is the error relative to the head
             seen = face - (tr.head_yaw.pos if kind == "smoothgaze" else naive_head)
             nx = -degrees_to_pixels(clamp(seen, 35.0), 44.0) + rnd.gauss(0, 0.004)
             ny = rnd.gauss(0, 0.004)
@@ -62,8 +63,8 @@ def run(kind: str, face_fn, secs: float = 14.0, seed: int = 1):
             tr.tick(dt, now=t)
             head = tr.head_yaw.pos
         else:
-            # 常见的错误写法：每 1.2 秒才看一次，看到偏了补一半，
-            # 然后用一个大增益直接冲过去。
+            # The common wrong way: look once every 1.2 seconds, correct half of
+            # what you see, then drive there with a large gain.
             if t >= next_naive_look:
                 next_naive_look = t + 1.2
                 seen = face_fn(t) - naive_head
@@ -90,7 +91,7 @@ def run(kind: str, face_fn, secs: float = 14.0, seed: int = 1):
 
 
 def face_walk(t):
-    """人走了过去又走回来。"""
+    """The person walks past and comes back."""
     if t < 1.0:
         return 0.0
     if t < 4.0:
@@ -104,29 +105,30 @@ def face_walk(t):
 
 def demo_sim():
     scenarios = [
-        ("人站着不动，偏 25 度", lambda t: 25.0),
-        ("人横穿画面 40 度再回来", face_walk),
-        ("人来回走 30 度 4 秒一圈", lambda t: 30.0 * math.sin(2 * math.pi * t / 4.0)),
+        ("standing still, 25 off-centre", lambda t: 25.0),
+        ("walking across 40 and back", face_walk),
+        ("pacing 30, 4 second period", lambda t: 30.0 * math.sin(2 * math.pi * t / 4.0)),
     ]
     print()
-    print("  误差统计，单位度。越小越好。")
-    print("  %-26s %-14s %-14s" % ("", "本模块", "常见错误写法"))
-    print("  " + "-" * 56)
+    print("  Following error in degrees. Lower is better.")
+    print("  %-30s %-16s %-16s" % ("", "this module", "naive version"))
+    print("  " + "-" * 64)
     for name, fn in scenarios:
         a = run("smoothgaze", fn)
         b = run("naive", fn)
-        print("  %-26s %-14s %-14s" % (
+        print("  %-30s %-16s %-16s" % (
             name,
-            "中位 %.1f p90 %.1f" % (a[0], a[1]),
-            "中位 %.1f p90 %.1f" % (b[0], b[1]),
+            "med %.1f p90 %.1f" % (a[0], a[1]),
+            "med %.1f p90 %.1f" % (b[0], b[1]),
         ))
     print()
 
 
-# ---------------------------------------------------------------- 摄像头
+# ---------------------------------------------------------------- camera
 
 def demo_cam(cam_index: int = 0):
     import cv2
+    import time
     from detect_yunet import YuNetFaceDetector
 
     model = "face_detection_yunet_2023mar.onnx"
@@ -136,10 +138,9 @@ def demo_cam(cam_index: int = 0):
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 450)
 
     tr = SmoothGazeTracker()
-    import time
     last = time.time()
 
-    print("打开窗口以后按 q 退出。")
+    print("Press q in the window to quit.")
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -158,7 +159,7 @@ def demo_cam(cam_index: int = 0):
         last = now
         y, p, b = tr.tick(dt, now=now)
 
-        # 在画面下方画一个虚拟的头，看得见它在跟
+        # Draw a virtual head near the bottom of the frame so you can see it follow
         cx, cy = 400, 520
         ang = math.radians(-y)
         tip = (int(cx + math.sin(ang) * 60), int(cy - math.cos(ang) * 60))

@@ -1,21 +1,27 @@
-"""用 OpenCV 的 YuNet 做人脸检测，输出 smoothgaze 需要的归一化坐标。
+"""Face detection with OpenCV's YuNet, returning the normalised coordinates
+smoothgaze needs.
 
-YuNet 是 232 KB 的轻量人脸检测网络，纯 CPU 单帧 20 毫秒上下，小到 28 像素的
-脸也能检出。模型来自 OpenCV Zoo，按 MIT 许可分发：
+YuNet is a 232 KB face detection network. On CPU one frame takes around 20 ms,
+and it still finds faces as small as 28 pixels. The model comes from OpenCV Zoo
+and is distributed under the MIT license:
 
     https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
 
-下载：
+Download:
 
     curl -LO https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
 
-依赖：opencv-python，numpy
+Requires: opencv-python, numpy
 
-两个容易踩的坑：
-  一、cv2.dnn 默认按 CPU 核数开线程。800x450 的小模型根本用不上十六个线程，
-      实测它会常驻吃满一个核做空转。第一件事就是 setNumThreads(2)。
-  二、瞄准的点要用鼻尖，不要用人脸框中心。框中心受发际线和下巴影响，
-      人一低头整体就偏，看着像「对着你但视线偏高」。
+Two traps worth knowing about:
+
+  1. cv2.dnn spawns one thread per CPU core by default. An 800x450 model has no
+     use for sixteen threads; measured, it saturates a core spinning. First
+     thing to do is setNumThreads(2).
+
+  2. Aim at the nose tip, not the bounding box centre. The box centre depends on
+     the hairline and the chin, so it drifts as the person nods, and the result
+     looks like "facing you, but looking slightly up".
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ __all__ = ["YuNetFaceDetector"]
 class YuNetFaceDetector:
     def __init__(self, model_path: str, width: int = 800, height: int = 450,
                  score_threshold: float = 0.6, threads: int = 2):
-        cv2.setNumThreads(threads)          # 见上面第一个坑
+        cv2.setNumThreads(threads)          # see trap 1 above
         self.width = width
         self.height = height
         self.det = cv2.FaceDetectorYN.create(
@@ -38,9 +44,10 @@ class YuNetFaceDetector:
         self.det.setInputSize((width, height))
 
     def detect(self, frame_bgr: np.ndarray):
-        """返回最大那张脸的 (nx, ny, confidence)，没有脸就返回 None。
+        """Returns (nx, ny, confidence) for the largest face, or None if there is none.
 
-        nx / ny 是鼻尖相对画面中心的归一化偏移，范围 -1..1，0 是正中。
+        nx / ny are the nose tip's offset from the frame centre, normalised to
+        -1..1, where 0 is centre.
         """
         h, w = frame_bgr.shape[:2]
         if (w, h) != (self.width, self.height):
@@ -63,9 +70,10 @@ class YuNetFaceDetector:
             return None
 
         x, y, fw, fh = best[0], best[1], best[2], best[3]
-        # YuNet 输出的 15 个值里，第 4-5 个是右眼、6-7 是左眼、8-9 是鼻尖、10-11 是嘴
+        # Of the 15 values YuNet returns, 4-5 are the right eye, 6-7 the left eye,
+        # 8-9 the nose tip and 10-11 the mouth corners.
         nose = (float(best[8]), float(best[9]))
-        if nose == (0.0, 0.0):              # 老版本模型可能没有关键点
+        if nose == (0.0, 0.0):              # older models may omit the landmarks
             nose = (x + fw / 2.0, y + fh / 2.0)
 
         nx = (nose[0] - self.width / 2.0) / (self.width / 2.0)

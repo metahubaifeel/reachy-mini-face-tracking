@@ -18,7 +18,7 @@ Face detection answers exactly one question: where in the frame is the face. Eve
 
 **All the work is in how the detection result gets used.** That is what this repo is.
 
-Measured comparison. Same person, same motion, two controllers. Following error in degrees:
+Closed-loop simulation, the one bundled in `example.py`: same face motion fed to two controllers, following error in degrees.
 
 | Scenario | This module, median / p90 | Typical naive implementation, median / p90 |
 |---|---|---|
@@ -166,7 +166,7 @@ The nose tip does not move with your hairstyle. `detect_yunet.py` uses values 8 
 | `move_threshold` | 0.15 | Target displacement that switches to `fast` |
 | `dead_zone` | 0.02 | Normalized pixel dead zone, about 0.9° |
 | `max_step` | 15.0 | Max angle a single vision frame may advance |
-| `head kp / vmax / amax` | 4.0 / 70 / 400 | Head gain, degrees per second, degrees per second squared |
+| `head kp / vmax / amax` | 4.0 / 70 / 400 | Head gain, degrees per second, degrees per second squared. The tracker runs pitch at kp 6.0, since vertical errors are smaller |
 | `head dead` | 0.4 | Head dead zone, degrees |
 | `body enter / exit` | 45 / 32 | Relative angle at which the body engages / disengages |
 | `body dwell` | 0.5 | How long the condition must hold before the body engages, seconds |
