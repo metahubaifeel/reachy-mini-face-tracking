@@ -1,4 +1,4 @@
-# smoothgaze
+# smoothgaze — Reachy Mini face tracking
 
 Smooth face tracking for a robot head. Built for a **Reachy Mini** — the video below is one — and written so it runs on any pan-tilt head with an optional waist axis: two angles in, three angles out, no robot SDK, about 400 lines of Python.
 
