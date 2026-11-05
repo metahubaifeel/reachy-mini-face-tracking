@@ -228,13 +228,13 @@ class BodyGate:
         self,
         enter=45.0,
         exit=32.0,
-        dwell=0.8,
+        dwell=0.5,
         lead=34.0,
         rel_limit=50.0,
         body_limit=90.0,
-        kp=3.0,
-        vmax=20.0,
-        amax=40.0,
+        kp=4.0,
+        vmax=30.0,
+        amax=90.0,
         dead=0.3,
     ) -> None:
         self.enter = enter
