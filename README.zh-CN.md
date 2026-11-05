@@ -1,10 +1,12 @@
 # smoothgaze
 
-让机器人的头丝滑地跟着人脸转。一个设备无关的人脸跟随控制律，约 400 行，不依赖任何机器人 SDK。
+让机器人的头丝滑地跟着人脸转。**Reachy Mini** 上跑的就是它，下面这段视频也是它，但代码不绑任何一台机器：只要能左右转、上下点，再有个可选的身子，两个角度进、三个角度出，约 400 行 Python，不依赖任何机器人 SDK。
+
+人脸识别的部分其实不难，难的是识别出来之后怎么用。这个仓库就是后面那一半。
 
 [English](README.md) · **中文**
 
-![demo](assets/demo.webp)
+![Reachy Mini 机器人的头平滑地跟着人脸转](assets/demo.webp)
 
 下载完整视频：[assets/demo.mp4](assets/demo.mp4)
 
@@ -72,11 +74,21 @@
 
 ---
 
-## 它不是只为 Reachy Mini 写的
+## Reachy Mini 是怎么接上去的，以及为什么不绑 SDK
 
-这个模块不 import 任何机器人 SDK，`tick` 里只做数学，输入是归一化的画面坐标，输出是三个角度。上面那段视频是 Reachy Mini，但代码本身换成任何「头部两轴 + 可选腰轴」的结构都能用。
+上面那段视频是 Reachy Mini，默认参数也是照着它调的。但模块里不 import 任何机器人 SDK，`tick` 只做数学：归一化的画面坐标进，三个角度出。Reachy 那一侧只有一次调用：
 
-需要改的只有默认值，它们来自 Reachy Mini 的几何：
+```python
+from reachy_mini.utils import create_head_pose
+
+yaw, pitch, body = tracker.tick(1 / 40)
+mini.set_target(create_head_pose(yaw=yaw, pitch=pitch, degrees=True),
+                antennas=[0.0, 0.0], body_yaw=math.radians(body))
+```
+
+把这一行换成你自己的 `send_to_servos`，其余一行都不用改。换成任何「头部两轴 + 可选腰轴」的结构都能用。
+
+参考机型是 [Pollen Robotics 的 Reachy Mini](https://github.com/pollen-robotics/reachy_mini)。需要改的只有默认值，它们来自这台机器的几何：
 
 | 默认值 | 为什么是这个数 | 换设备时怎么定 |
 |---|---|---|
@@ -184,6 +196,13 @@ while True:
 - **单张脸。** 现在取画面里最大的那张脸。多人场景需要额外的目标关联，不然会在两张脸之间来回跳。
 - **不做人体跟踪。** 只跟脸。背面朝你的时候没有脸，会跟丢并停在原地。
 - **不是避障或者导航。** 只管看，不管走。
+
+---
+
+## 相关
+
+- [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) — 演示里那台机器人，两档平滑系数的出处 `_AdaptiveCenterFilter` 就在它的官方 SDK 里
+- [OpenCV Zoo: YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) — `detect_yunet.py` 用的人脸检测模型
 
 ---
 

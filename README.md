@@ -1,10 +1,12 @@
 # smoothgaze
 
-Make a robot head track a face smoothly. A device-agnostic control law in about 400 lines, with no dependency on any robot SDK.
+Smooth face tracking for a robot head. Built for a **Reachy Mini** — the video below is one — and written so it runs on any pan-tilt head with an optional waist axis: two angles in, three angles out, no robot SDK, about 400 lines of Python.
+
+Face detection is the easy half. This is the half that decides whether the head looks alive or looks like a stepper motor.
 
 **English** · [中文](README.zh-CN.md)
 
-![demo](assets/demo.webp)
+![A Reachy Mini robot head smoothly following a person's face](assets/demo.webp)
 
 Full video: [assets/demo.mp4](assets/demo.mp4)
 
@@ -72,11 +74,21 @@ Rule of thumb: once `vmax × frame interval` exceeds about 3°, people start cal
 
 ---
 
-## It is not written for Reachy Mini
+## Reachy Mini, and why the code binds to no SDK
 
-The module imports no robot SDK. `tick` does only math: normalized image coordinates in, three angles out. The demo video is a Reachy Mini, but the code works for any structure with a two-axis head and an optional waist axis.
+The demo video is a Reachy Mini, and the defaults are tuned on one. But the module imports no robot SDK: `tick` does only math, normalized image coordinates in and three angles out. The Reachy side is one call, handed to the head and waist:
 
-Only the defaults come from Reachy's geometry:
+```python
+from reachy_mini.utils import create_head_pose
+
+yaw, pitch, body = tracker.tick(1 / 40)
+mini.set_target(create_head_pose(yaw=yaw, pitch=pitch, degrees=True),
+                antennas=[0.0, 0.0], body_yaw=math.radians(body))
+```
+
+Swap that for your own `send_to_servos` and the rest is unchanged. It works on any structure with a two-axis head and an optional waist axis.
+
+The reference robot is [Pollen Robotics' Reachy Mini](https://github.com/pollen-robotics/reachy_mini). Only these defaults come from its geometry:
 
 | Default | Why this number | How to pick yours |
 |---|---|---|
@@ -184,6 +196,13 @@ The nose tip does not move with your hairstyle. `detect_yunet.py` uses values 8 
 - **Multiple faces.** It takes the largest face in the frame. Multi-person scenes need target association on top, or the head will bounce between two faces.
 - **Body tracking.** It tracks faces only. When you turn your back there is no face, so it loses you and stops where it is.
 - **Navigation.** It only looks, it never moves.
+
+---
+
+## Related
+
+- [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) — the robot head in the demo, and where the official SDK's `_AdaptiveCenterFilter` comes from
+- [OpenCV Zoo: YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) — the face detector used in `detect_yunet.py`
 
 ---
 
