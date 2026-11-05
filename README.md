@@ -1,106 +1,106 @@
 # smoothgaze
 
-让机器人的头丝滑地跟着人脸转。一个设备无关的人脸跟随控制律，约 400 行，不依赖任何机器人 SDK。
+Make a robot head track a face smoothly. A device-agnostic control law in about 400 lines, with no dependency on any robot SDK.
 
-**English:** A device-agnostic control law for making a robot head track a face smoothly. It turns "the face is off-center by this many pixels" into "the head should be at this angle", and gets there without jitter, lag spikes, or overshoot. No SDK required — you feed it normalized face coordinates, it hands back a pose.
+**English** · [中文](README.zh-CN.md)
 
 ![demo](assets/demo.webp)
 
-下载完整视频：[assets/demo.mp4](assets/demo.mp4)
+Full video: [assets/demo.mp4](assets/demo.mp4)
 
 ---
 
-## 先说清楚一件事
+## The thing that is not obvious
 
-丝滑不是人脸识别带来的。
+Smoothness does not come from face detection.
 
-人脸检测只回答一个问题：人现在在画面的哪个位置。就算这个答案百分百准确，如果后面是每 1.2 秒才看一次、看到偏了就猛转 30 度，画面照样一格一格。
+Face detection answers exactly one question: where in the frame is the face. Even if that answer were perfect, sampling it once every 1.2 seconds and then snapping the head 30 degrees still looks steppy.
 
-**真正的功夫全在人脸识别的结果被怎么用。** 这个仓库就是那部分。
+**All the work is in how the detection result gets used.** That is what this repo is.
 
-实测对比，同一个人在同样地走，两套控制器的跟随误差，单位度：
+Measured comparison. Same person, same motion, two controllers. Following error in degrees:
 
-| 场景 | 本模块 中位 / p90 | 常见错误写法 中位 / p90 |
+| Scenario | This module, median / p90 | Typical naive implementation, median / p90 |
 |---|---|---|
-| 人站着不动，偏 25 度 | 0.0 / 0.0 | 0.2 / 2.3 |
-| 人横穿画面 40 度再回来 | **0.3 / 9.6** | 18.8 / 36.6 |
-| 人来回走 30 度，4 秒一圈 | **11.7 / 16.1** | 20.0 / 32.9 |
+| Standing still, 25° off-center | 0.0 / 0.0 | 0.2 / 2.3 |
+| Walking across the frame 40° and back | **0.3 / 9.6** | 18.8 / 36.6 |
+| Pacing ±30°, 4 second period | **11.7 / 16.1** | 20.0 / 32.9 |
 
-跑 `python example.py sim` 自己复现。
-
----
-
-## 为什么丝滑：四个决定性的选择
-
-### 一、每帧把误差补满，不要补一半
-
-很多实现是「看到偏了，补 45% 的误差」。这等于把收敛速度藏进增益里——人站着不动看不出区别，人一走就跟不上。
-
-正确的做法是每帧直接算出「脸正对镜头时头应该在哪个绝对角度」，然后平滑地过去。Reachy Mini 官方 SDK 也是这么干的。
-
-### 二、算目标时用「拍照那一刻头在哪」
-
-从抓帧到算出结果有几十毫秒，这段时间头还在转。如果拿当前角度当基准，每一帧都会多推一点，表现就是过冲之后来回摆。
-
-所以模块里维护了一个姿态环形缓冲，算目标时按时间戳往回查拍照那一刻的姿态。
-
-### 三、平滑系数自适应
-
-目标在画面里位移超过 0.15，说明人在走，系数给 0.60 追得紧；几乎不动时给 0.30 压掉检测抖动。
-
-固定系数只能二选一：要么跟得紧但抖，要么稳但慢。两档系数取自 Reachy Mini 官方 SDK 的 `_AdaptiveCenterFilter`。
-
-### 四、能用手腕解决的就别动腰
-
-头部先转。头相对底盘超过 45 度、并且**持续 0.5 秒**，底盘才开始补位；回到 32 度以内立刻停住，而且**停在那儿不回正**——回正会让画面明显晃一下。
-
-底盘转的时候，头永远领先 34 度，给继续往前的方向留余量。
+Reproduce it yourself with `python example.py sim`.
 
 ---
 
-## 还有一个看不见的坑：画面卡不是掉帧
+## Four decisions that make it smooth
 
-这一条值得单独说，因为它的反直觉程度最高。
+### 1. Close the full error every frame, not half of it
 
-有人会说自己的跟随「一顿一顿」，第一反应是丢帧。实测过一个典型案例：每秒 15 张，帧间隔中位 63 毫秒、最长 90 毫秒，**一次都没有超过 200 毫秒**。一张没丢。
+A lot of implementations do "the face is off, correct 45% of the error". That hides the convergence rate inside the gain. Standing still, you cannot tell the difference. The moment the person walks, it falls behind.
 
-那为什么看着卡？因为头每秒转 120 度，而画面每秒只出 15 张。两帧之间隔了 66 毫秒，头已经转了 **8 度**。你在屏幕上看到的世界每 66 毫秒平移 8 度，眼睛就把它读成「一格一格」。
+The right approach is to compute, every frame, the absolute head angle at which the face would be dead center, then move there smoothly. The official Reachy Mini SDK does the same.
 
-解法有两个：让头转慢点，或者让画面出快点。**提帧率是纯赚的**，因为它同时让跟随更准。从 15fps 提到 30fps，同样 70 度每秒的转速，单帧位移从 8 度降到 2.3 度，就连续了。
+### 2. Compute the target from where the head WAS when the frame was captured
 
-所以：`vmax × 帧间隔` 这个乘积超过 3 度左右，人眼就开始觉得卡。调参的时候盯着它。
+From capture to result there are tens of milliseconds, and the head is still turning during them. If you use the current angle as the baseline, every frame pushes a little too far, and the visible result is overshoot followed by oscillation.
+
+So the module keeps a ring buffer of head poses and looks the baseline up by timestamp.
+
+### 3. Adaptive smoothing
+
+When the target moves more than 0.15 in normalized image space, the person is walking, so use a factor of 0.60 and track tightly. When it barely moves, use 0.30 and filter out detection noise.
+
+A fixed factor forces a choice: track tightly and jitter, or stay stable and lag. The two settings are lifted from the official Reachy Mini SDK's `_AdaptiveCenterFilter`.
+
+### 4. Solve it with the wrist before reaching for the waist
+
+The head turns first. Only when it has been more than 45° off the body for **0.5 seconds** does the body start to help. Back inside 32°, the body stops immediately and **stays where it is** — recentering makes the whole view lurch.
+
+While the body is catching up, the head always leads by 34°, so it keeps headroom in the direction of travel.
 
 ---
 
-## 它不是只为 Reachy Mini 写的
+## The invisible trap: choppy is not dropped frames
 
-这个模块不 import 任何机器人 SDK，`tick` 里只做数学，输入是归一化的画面坐标，输出是三个角度。上面那段视频是 Reachy Mini，但代码本身换成任何「头部两轴 + 可选腰轴」的结构都能用。
+This one deserves its own section because it is the most counterintuitive.
 
-需要改的只有默认值，它们来自 Reachy Mini 的几何：
+People describe their tracking as "stuttering" and immediately suspect frame drops. Measured on a real case: 15 frames per second, median inter-frame gap 63 ms, worst 90 ms, **not one gap over 200 ms**. Not a single frame was lost.
 
-| 默认值 | 为什么是这个数 | 换设备时怎么定 |
+So why does it look choppy? Because the head turned 120° per second and the display only produced 15 frames per second. Two frames are 66 ms apart, and in that time the head turned **8°**. The world in your window translates 8° every 66 ms, and your eye reads that as stepping.
+
+There are two fixes: turn the head slower, or produce frames faster. **Raising the frame rate is a pure win**, because it makes tracking more accurate at the same time. Going from 15 to 30 fps at the same 70°/s turned per-frame displacement from 8° into 2.3°, which reads as continuous.
+
+Rule of thumb: once `vmax × frame interval` exceeds about 3°, people start calling it choppy. Watch that product while tuning.
+
+---
+
+## It is not written for Reachy Mini
+
+The module imports no robot SDK. `tick` does only math: normalized image coordinates in, three angles out. The demo video is a Reachy Mini, but the code works for any structure with a two-axis head and an optional waist axis.
+
+Only the defaults come from Reachy's geometry:
+
+| Default | Why this number | How to pick yours |
 |---|---|---|
-| `half_fov_h = 44` | Reachy 相机的水平半视场 | 拿尺子量或者用棋盘格标定 |
-| `pitch_limit = 28.5` | 头部俯仰的机械行程 | 查你自己的机械限位 |
-| `rel_limit = 50` | 头相对底盘 55 度的 IK 约束留一点余量 | 同上 |
-| `body enter = 45` | 头快到头了才开始动身子 | 一般取相对行程的 80% |
-| `head vmax = 70` | 30fps 下单帧 2.3 度，不跳 | 帧率 × 角速度 < 3 度即可 |
+| `half_fov_h = 44` | Reachy camera's horizontal half field of view | Measure it, or calibrate with a checkerboard |
+| `pitch_limit = 28.5` | Head pitch mechanical travel | Check your own mechanical limits |
+| `rel_limit = 50` | 55° IK constraint between head and body, with margin | Same |
+| `body enter = 45` | Body only moves once the head is nearly maxed out | About 80% of the relative travel |
+| `head vmax = 70` | 2.3° per frame at 30 fps, no stepping | Keep frame rate × angular rate under 3° |
 
-如果你的设备只有一个头、没有身子，把 `BodyGate` 那一段删掉，`tick` 返回的头角度直接可用。
+If your device has a head but no body, delete the `BodyGate` usage and take the head angles from `tick` directly.
 
 ---
 
-## 安装
+## Install
 
-只有一个文件，直接拷过去用：
+One file, copy it into your project:
 
 ```bash
-cp smoothgaze.py 你的项目/
+cp smoothgaze.py your_project/
 ```
 
-需要 Python 3.8 以上，只用标准库。
+Python 3.8 or newer, standard library only.
 
-如果要用现成的人脸检测，需要 `opencv-python` 和 `numpy`：
+To use the bundled face detector you also need `opencv-python` and `numpy`:
 
 ```bash
 pip install opencv-python numpy
@@ -109,7 +109,7 @@ curl -LO https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yun
 
 ---
 
-## 用法
+## Usage
 
 ```python
 import time
@@ -117,17 +117,17 @@ from smoothgaze import SmoothGazeTracker
 
 tr = SmoothGazeTracker(half_fov_h=44.0, half_fov_v=28.5)
 
-# 视觉线程：每拿到一帧人脸就调一次
-# nx / ny 是鼻尖相对画面中心的归一化偏移，-1..1，0 是正中
+# Vision thread: call once per frame that contains a face.
+# nx / ny are the nose offset from frame center, normalized to -1..1.
 tr.on_face(nx, ny, capture_ts)
 
-# 控制线程：40Hz 调一次，拿回来喂给电机
+# Control thread: call at 40 Hz and hand the result to your motors.
 yaw, pitch, body = tr.tick(dt)
 ```
 
-`tick` 里不碰任何硬件，只做数学。你怎么驱动都行，PCA9685 也好，串口舵机也好，ROS 也好。
+`tick` touches no hardware, it only does math. Drive it however you like: PCA9685, serial servos, ROS, whatever.
 
-配合 `detect_yunet.py` 的完整例子：
+Full example with the bundled detector:
 
 ```python
 from smoothgaze import SmoothGazeTracker
@@ -148,45 +148,45 @@ while True:
 
 ---
 
-## 为什么瞄鼻尖，不瞄人脸框中心
+## Aim at the nose, not the bounding box center
 
-检测器给的是一张脸的方框。框的中心受**发际线**和**下巴**影响：头发高一点框就偏上，下巴短一点框就偏下。结果是机器人「对着你」了，但视线老是偏一点。
+A detector returns a box around the face. The center of that box depends on the **hairline** and the **chin**: taller hair pushes it up, a shorter chin pulls it down. The result is a robot that is facing you but whose gaze is consistently a little off.
 
-鼻尖这个点不受发型影响，是稳定的。`detect_yunet.py` 用的是 YuNet 输出里的第 8、9 个值，那就是鼻尖。
+The nose tip does not move with your hairstyle. `detect_yunet.py` uses values 8 and 9 of YuNet's output, which are exactly the nose tip.
 
 ---
 
-## 参数表
+## Parameters
 
-| 参数 | 默认 | 含义 |
+| Parameter | Default | Meaning |
 |---|---|---|
-| `half_fov_h` / `half_fov_v` | 44 / 28.5 | 相机水平 / 垂直半视场角，**必须实测校准** |
-| `pipeline_ms` | 55 | 抓帧到算出结果的延迟，估错了会过冲 |
-| `slow` / `fast` | 0.30 / 0.60 | 自适应低通的两档系数 |
-| `move_threshold` | 0.15 | 目标位移超过多少就切到 fast |
-| `dead_zone` | 0.02 | 归一化像素死区，约 0.9 度 |
-| `max_step` | 15.0 | 单个视觉帧允许推进的最大角度 |
-| `head kp / vmax / amax` | 4.0 / 70 / 400 | 头部比例增益、度每秒、度每二次方秒 |
-| `head dead` | 0.4 | 头部死区，度 |
-| `body enter / exit` | 45 / 32 | 底盘介入 / 退出的相对角 |
-| `body dwell` | 0.5 | 底盘介入前要持续多久，秒 |
-| `body kp / vmax / amax` | 4.0 / 30 / 90 | 底盘比例增益、度每秒、度每二次方秒 |
-| `body lead` | 34 | 底盘目标永远落后头多少度 |
-| `rel_limit` | 50 | 头相对底盘的硬约束 |
+| `half_fov_h` / `half_fov_v` | 44 / 28.5 | Camera horizontal / vertical half field of view, **must be calibrated** |
+| `pipeline_ms` | 55 | Capture-to-result latency; a bad estimate causes overshoot |
+| `slow` / `fast` | 0.30 / 0.60 | The two adaptive low-pass factors |
+| `move_threshold` | 0.15 | Target displacement that switches to `fast` |
+| `dead_zone` | 0.02 | Normalized pixel dead zone, about 0.9° |
+| `max_step` | 15.0 | Max angle a single vision frame may advance |
+| `head kp / vmax / amax` | 4.0 / 70 / 400 | Head gain, degrees per second, degrees per second squared |
+| `head dead` | 0.4 | Head dead zone, degrees |
+| `body enter / exit` | 45 / 32 | Relative angle at which the body engages / disengages |
+| `body dwell` | 0.5 | How long the condition must hold before the body engages, seconds |
+| `body kp / vmax / amax` | 4.0 / 30 / 90 | Body gain, degrees per second, degrees per second squared |
+| `body lead` | 34 | Degrees the body always trails the head |
+| `rel_limit` | 50 | Hard constraint between head and body |
 
-**校准 `half_fov_h`**：把脸放在画面最左边，读检测器的 nx，然后让头只靠人眼估、转到正对，记录转了多少度。两者用 `atan` 反解。蒙的时候差 20% 很常见，效果就是「越往边上追得越不准」。
-
----
-
-## 它做不到什么
-
-- **不能让人快速走过时零延迟。** 这是物理上限：头有最大角速度，相机有帧率。实测 30fps 加 70 度每秒，人正常速度走路时 p90 大约 12 度。想更好只能提帧率或换更快的检测器。
-- **单张脸。** 现在取画面里最大的那张脸。多人场景需要额外的目标关联，不然会在两张脸之间来回跳。
-- **不做人体跟踪。** 只跟脸。背面朝你的时候没有脸，会跟丢并停在原地。
-- **不是避障或者导航。** 只管看，不管走。
+**Calibrating `half_fov_h`**: put a face at the far edge of the frame, read `nx` from the detector, then turn the head until it faces the person and record how many degrees that took. Solve with `atan`. Guessing is usually off by 20%, and the symptom is "tracking gets less accurate toward the edges".
 
 ---
 
-## 许可
+## What it cannot do
 
-MIT。人脸检测模型 YuNet 来自 [OpenCV Zoo](https://github.com/opencv/opencv_zoo)，同样是 MIT。
+- **Zero latency on fast walkers.** There is a hard limit: the head has a maximum angular rate and the camera has a frame rate. Measured at 30 fps and 70°/s, a person walking at normal speed gives a p90 of about 12°. Better than that needs a higher frame rate or a faster detector.
+- **Multiple faces.** It takes the largest face in the frame. Multi-person scenes need target association on top, or the head will bounce between two faces.
+- **Body tracking.** It tracks faces only. When you turn your back there is no face, so it loses you and stops where it is.
+- **Navigation.** It only looks, it never moves.
+
+---
+
+## License
+
+MIT. The face detection model is YuNet from [OpenCV Zoo](https://github.com/opencv/opencv_zoo), also MIT.
