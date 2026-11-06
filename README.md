@@ -102,6 +102,20 @@ If your device has a head but no body, delete the `BodyGate` usage and take the 
 
 ---
 
+## The daemon already ships face tracking
+
+Reachy Mini's SDK has a face tracker of its own: `reachy_mini/vision/face_tracking.py` runs a YuNet detector thread inside the daemon, and `start_head_tracking()` turns it on. Its `_AdaptiveCenterFilter` is where this module's 0.30 / 0.60 pair comes from. If all you need is "the head follows a face", use it — it is less code to own.
+
+This module covers what that one does not:
+
+- **The daemon tracker owns the head.** Once enabled, it writes the head pose on every control tick, and anything else that wants to move the head has to fight it. A demo that also nods, waves, speaks, and looks around needs arbitration, and arbitration needs a tracker that yields.
+- **This one is preemptible and observable.** Every aim is a target you set; preempting it means setting a newer target. You can read where the head is going and cancel a move halfway.
+- **No daemon, no SDK, no Gi/GStreamer.** `tick` is plain math in any Python process. The daemon tracker only exists inside the daemon.
+
+If you are running the daemon and nothing else needs the head, the built-in tracker is the shorter path. The two are not meant to run at the same time: they will pull the same head in opposite directions.
+
+---
+
 ## Install
 
 One file, copy it into your project:
