@@ -72,6 +72,8 @@ There are two fixes: turn the head slower, or produce frames faster. **Raising t
 
 Rule of thumb: once `vmax × frame interval` exceeds about 3°, people start calling it choppy. Watch that product while tuning.
 
+One more place the frames go, and it is easy to blame the detector: **the HTTP hop between your client and the detection process**. If the server writes headers and body as two packets on a socket without `TCP_NODELAY`, Nagle holds the second one until the receiver's delayed ACK fires, which on Linux is about 40 ms. Measured here: detection 8-10 ms, round trip 52 ms, loop stuck at 15 Hz. `disable_nagle_algorithm = True` on the Python `BaseHTTPRequestHandler` plus `socket.setNoDelay(true)` on the client took the round trip to 8-10 ms and the loop to 30 Hz, with the detector unchanged. If your server-side timer says 10 ms and your client-side timer says 50 ms, look at the transport before you look at the model.
+
 ---
 
 ## Reachy Mini, and why the code binds to no SDK

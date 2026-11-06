@@ -72,6 +72,8 @@
 
 所以：`vmax × 帧间隔` 这个乘积超过 3 度左右，人眼就开始觉得卡。调参的时候盯着它。
 
+还有一处时间容易怪到模型头上，其实是**客户端和检测进程之间的那一跳 HTTP**。服务端把响应头和响应体写两次，socket 上不开 `TCP_NODELAY` 的话，Nagle 会把第二个包压到对方的延迟确认，Linux 上就是 40 毫秒。本机实测：检测本身 8 到 10 毫秒，往返 52 毫秒，循环卡在 15Hz。在 Python 的 `BaseHTTPRequestHandler` 上设 `disable_nagle_algorithm = True`、客户端加 `socket.setNoDelay(true)`，往返降到 8 到 10 毫秒，循环回到 30Hz，检测代码一行没动。**服务端自己计时 10 毫秒、客户端计时 50 毫秒，先查传输，别急着换模型。**
+
 ---
 
 ## Reachy Mini 是怎么接上去的，以及为什么不绑 SDK
